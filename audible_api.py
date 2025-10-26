@@ -3,6 +3,7 @@ import json
 import sys
 import asyncio
 import requests
+import subprocess
 from getpass import getpass
 
 import pandas as pd
@@ -294,9 +295,17 @@ class AudibleAPI:
             title_m4b_path = os.path.join(title_dir_path, f"{title}.m4b")
             title_mp3_path = os.path.join(title_dir_path, f"{title}.mp3")
 
-            # Load audiobook into AudioSegment so we can slice it
-            audio_book = AudioSegment.from_mp3(
-                title_mp3_path)
+            # Determine which audio file exists
+            audio_file_path = None
+            if os.path.exists(title_mp3_path):
+                audio_file_path = title_mp3_path
+            elif os.path.exists(title_m4b_path):
+                audio_file_path = title_m4b_path
+            elif os.path.exists(title_aax_path):
+                audio_file_path = title_aax_path
+            else:
+                print(f"No audio file found for {_title}")
+                return []
 
             file_counter = 1
             notes_dict = {}
@@ -335,8 +344,9 @@ class AudibleAPI:
                     if start_pos == end_pos:
                         end_pos += 30000
 
-                    # Slice it up
-                    clip = audio_book[start_pos:end_pos]
+                    # Convert milliseconds to seconds for ffmpeg
+                    start_seconds = start_pos / 1000.0
+                    duration_seconds = (end_pos - start_pos) / 1000.0
 
                     file_name = notes_dict.get(
                         raw_start_pos, f"clip{file_counter}")
@@ -345,13 +355,41 @@ class AudibleAPI:
                     position_suffix = f"_{position_seconds}s"
                     full_file_name = f"{file_name}{position_suffix}"
 
-                    # Save the clip
+                    # Extract clip using ffmpeg directly
                     clip_path = os.path.join(clips_dir_path, f"{full_file_name}.flac")
-                    clip.export(
-                        clip_path, format="flac")
+                    self._extract_audio_segment(audio_file_path, start_seconds, duration_seconds, clip_path)
                     file_counter += 1
 
             return bookmarks_data
+
+    def _extract_audio_segment(self, input_file, start_seconds, duration_seconds, output_file):
+        """
+        Extract an audio segment from a file using ffmpeg.
+        
+        Args:
+            input_file: Path to the input audio file
+            start_seconds: Start time in seconds
+            duration_seconds: Duration in seconds
+            output_file: Path to the output file (will be FLAC format)
+        """
+        try:
+            cmd = [
+                "ffmpeg",
+                "-i", input_file,
+                "-ss", str(start_seconds),
+                "-t", str(duration_seconds),
+                "-c:a", "flac",
+                "-y",  # Overwrite output file
+                output_file
+            ]
+            
+            # Run ffmpeg with minimal output
+            subprocess.run(cmd, capture_output=True, check=True, text=True)
+            print(f"Extracted: {os.path.basename(output_file)}")
+        except subprocess.CalledProcessError as e:
+            print(f"Error extracting audio segment: {e.stderr}")
+        except Exception as e:
+            print(f"Error extracting audio segment: {str(e)}")
 
     async def cmd_convert_audiobook(self):
         # FFMPEG needs to be installed for this step! see readme for more details
